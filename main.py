@@ -178,7 +178,6 @@ async def send_main_menu(user_id, username):
 @dp.callback_query(F.data == "create_link")
 async def create_link(callback: CallbackQuery):
     await callback.answer()
-
     await callback.message.edit_caption(
         caption="🤖 Все проекты:",
         reply_markup=projects_kb()
@@ -436,4 +435,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())ы
+    asyncio.run(main())
