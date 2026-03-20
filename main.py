@@ -19,7 +19,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")  # или вставь токен сюда р
 ADMIN_ID = 8468065089  # ID админа, который принимает заявки
 
 # вот сюда вставь file_id картинки меню
-PHOTO_FILE_ID = "ВАШ_FILE_ID_СЮДА"
+PHOTO_FILE_ID = "AgACAgUAAxkBAAEcSFFpvKqbYr0IfiMOKypItDtDip7SXgACJw5rG8Vq6VX8OCc0sIop2AEAAwIAA3gAAzoE"
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
