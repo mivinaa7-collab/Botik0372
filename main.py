@@ -27,7 +27,7 @@ dp = Dispatcher()
 
 
 # ----------------------------------------
-# БАЗА ДАННЫХ (SQLite)
+# БАЗА ДАННЫХ
 # ----------------------------------------
 
 conn = sqlite3.connect("bot.db")
@@ -62,6 +62,7 @@ def is_approved(user_id: int) -> bool:
 class Form(StatesGroup):
     about = State()
     source = State()
+    price = State()  # 👈 добавили
 
 
 # ----------------------------------------
@@ -160,7 +161,6 @@ async def about(message: Message, state: FSMContext):
 @dp.message(Form.source)
 async def source(message: Message, state: FSMContext):
     data = await state.get_data()
-
     user = message.from_user
 
     kb = InlineKeyboardMarkup(
@@ -201,22 +201,47 @@ async def create_link(callback: CallbackQuery):
 
 
 @dp.callback_query(F.data.startswith("proj_"))
-async def select_project(callback: CallbackQuery):
+async def select_project(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
     project = callback.data.split("_")[1]
-    user_id = callback.from_user.id
 
-    link = generate_link(user_id, project)
+    await state.update_data(project=project)
 
     await callback.message.edit_caption(
-        caption=f"🔗 Твоя ссылка для {project}:\n\n{link}",
+        caption=f"💰 Введи цену объявления для {project} (только число, UAH):",
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[
                 [InlineKeyboardButton(text="⬅️ Назад", callback_data="create_link")]
             ]
         )
     )
+
+    await state.set_state(Form.price)
+
+
+@dp.message(Form.price)
+async def get_price(message: Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("❌ Введи ТОЛЬКО число")
+        return
+
+    price = int(message.text)
+
+    data = await state.get_data()
+    project = data["project"]
+    user_id = message.from_user.id
+
+    link = generate_link(user_id, project)
+
+    await message.answer(
+        f"🔗 Ссылка создана!\n\n"
+        f"🏦 Проект: {project}\n"
+        f"💰 Цена: {price} UAH\n\n"
+        f"{link}"
+    )
+
+    await state.clear()
 
 
 @dp.callback_query(F.data == "back_menu")
@@ -239,7 +264,6 @@ async def approve(callback: CallbackQuery):
 
     try:
         user_id = int(callback.data.split("_")[1])
-
         approve_user(user_id)
 
         await send_main_menu(
