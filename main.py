@@ -44,6 +44,16 @@ CREATE TABLE IF NOT EXISTS links (
 )
 """)
 
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS settings (
+    user_id INTEGER PRIMARY KEY,
+    tag TEXT DEFAULT '#',
+    domain TEXT DEFAULT 'Общий',
+    payment TEXT DEFAULT 'TRC20',
+    traffic INTEGER DEFAULT 0
+)
+""")
+
 conn.commit()
 
 
@@ -59,12 +69,30 @@ def is_approved(user_id: int) -> bool:
     return result and result[0] == 1
 
 
+def get_settings(user_id):
+    cursor.execute("SELECT * FROM settings WHERE user_id=?", (user_id,))
+    data = cursor.fetchone()
+
+    if not data:
+        cursor.execute("INSERT INTO settings (user_id) VALUES (?)", (user_id,))
+        conn.commit()
+        return get_settings(user_id)
+
+    return {
+        "tag": data[1],
+        "domain": data[2],
+        "payment": data[3],
+        "traffic": data[4]
+    }
+
+
 # -------------------- FSM --------------------
 
 class Form(StatesGroup):
     about = State()
     source = State()
     price = State()
+    tag = State()
 
 
 # -------------------- КНОПКИ --------------------
@@ -101,6 +129,21 @@ def projects_kb():
             [
                 InlineKeyboardButton(text="⬅️ Назад", callback_data="back_menu")
             ]
+        ]
+    )
+
+
+def settings_kb(traffic):
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✍️ изменить тэг", callback_data="set_tag")],
+            [InlineKeyboardButton(
+                text="✅ вкл переходы" if not traffic else "❌ выкл переходы",
+                callback_data="toggle_traffic"
+            )],
+            [InlineKeyboardButton(text="💌 сообщения кодеру", callback_data="coder")],
+            [InlineKeyboardButton(text="🔗 add личный домен", callback_data="add_domain")],
+            [InlineKeyboardButton(text="⬅️ назад", callback_data="back_menu")]
         ]
     )
 
@@ -175,7 +218,6 @@ async def get_price(message: Message, state: FSMContext):
 
     link = generate_link(user_id, project)
 
-    # 💾 сохраняем
     cursor.execute(
         "INSERT INTO links (user_id, project, price, link) VALUES (?, ?, ?, ?)",
         (user_id, project, price, link)
@@ -207,7 +249,7 @@ async def my_posts(callback: CallbackQuery):
         text = "📭 У тебя нет объявлений"
     else:
         text = "🐰 Ваши ссылки:\n\n"
-        for i, (project, price) in enumerate(rows, 1):
+        for project, price in rows:
             text += f"• Украина / {project} / {price} UAH\n"
 
     kb = InlineKeyboardMarkup(
@@ -228,7 +270,6 @@ async def delete_links(callback: CallbackQuery):
     await callback.answer()
 
     user_id = callback.from_user.id
-
     cursor.execute("DELETE FROM links WHERE user_id=?", (user_id,))
     conn.commit()
 
@@ -242,6 +283,78 @@ async def delete_links(callback: CallbackQuery):
     )
 
 
+# -------------------- НАСТРОЙКИ --------------------
+
+@dp.callback_query(F.data == "settings")
+async def settings(callback: CallbackQuery):
+    await callback.answer()
+
+    user_id = callback.from_user.id
+    s = get_settings(user_id)
+
+    traffic_status = "❌ выкл" if s["traffic"] == 0 else "✅ вкл"
+
+    text = (
+        "🍬 Настройки / Налаштування\n\n"
+        f"1️⃣ Твой тэг: {s['tag']}\n"
+        f"2️⃣ Домен: {s['domain']}\n"
+        f"3️⃣ Способ выплаты: {s['payment']}\n"
+        f"4️⃣ Переходы: {traffic_status}"
+    )
+
+    await callback.message.edit_caption(
+        caption=text,
+        reply_markup=settings_kb(s["traffic"])
+    )
+
+
+@dp.callback_query(F.data == "toggle_traffic")
+async def toggle_traffic(callback: CallbackQuery):
+    await callback.answer()
+
+    user_id = callback.from_user.id
+    s = get_settings(user_id)
+
+    new_value = 0 if s["traffic"] else 1
+
+    cursor.execute(
+        "UPDATE settings SET traffic=? WHERE user_id=?",
+        (new_value, user_id)
+    )
+    conn.commit()
+
+    await settings(callback)
+
+
+@dp.callback_query(F.data == "set_tag")
+async def set_tag(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+
+    await callback.message.edit_caption(
+        caption="✍️ Введи новый тег:"
+    )
+
+    await state.set_state(Form.tag)
+
+
+@dp.message(Form.tag)
+async def save_tag(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+
+    cursor.execute(
+        "UPDATE settings SET tag=? WHERE user_id=?",
+        (message.text, user_id)
+    )
+    conn.commit()
+
+    await message.answer("✅ Тег обновлен")
+    await state.clear()
+
+    await send_main_menu(user_id, message.from_user.full_name)
+
+
+# -------------------- НАЗАД --------------------
+
 @dp.callback_query(F.data == "back_menu")
 async def back_menu(callback: CallbackQuery):
     await callback.answer()
@@ -252,7 +365,7 @@ async def back_menu(callback: CallbackQuery):
     )
 
 
-# -------------------- СТАРТ И ЗАЯВКИ --------------------
+# -------------------- СТАРТ --------------------
 
 @dp.message(CommandStart())
 async def start(message: Message, state: FSMContext):
@@ -323,4 +436,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(main())ы
