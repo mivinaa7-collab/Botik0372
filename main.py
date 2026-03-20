@@ -13,10 +13,6 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 
 
-# ----------------------------------------
-# НАСТРОЙКИ
-# ----------------------------------------
-
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = 8468065089
 
@@ -26,9 +22,7 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 
-# ----------------------------------------
-# БАЗА ДАННЫХ
-# ----------------------------------------
+# -------------------- БД --------------------
 
 conn = sqlite3.connect("bot.db")
 cursor = conn.cursor()
@@ -37,6 +31,16 @@ cursor.execute("""
 CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
     approved INTEGER DEFAULT 0
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS links (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    project TEXT,
+    price INTEGER,
+    link TEXT
 )
 """)
 
@@ -55,27 +59,21 @@ def is_approved(user_id: int) -> bool:
     return result and result[0] == 1
 
 
-# ----------------------------------------
-# FSM
-# ----------------------------------------
+# -------------------- FSM --------------------
 
 class Form(StatesGroup):
     about = State()
     source = State()
-    price = State()  # 👈 добавили
+    price = State()
 
 
-# ----------------------------------------
-# МЕНЮ
-# ----------------------------------------
+# -------------------- КНОПКИ --------------------
 
 def main_menu_kb():
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="🏝 Создать ссылку", callback_data="create_link")],
             [InlineKeyboardButton(text="🤍 Мои объявления", callback_data="my_posts")],
-            [InlineKeyboardButton(text="🐷 Вбив-состав", callback_data="vbiv_team")],
-            [InlineKeyboardButton(text="🫧 Касса", callback_data="kassa")],
             [InlineKeyboardButton(text="🍬 Настройки", callback_data="settings")]
         ]
     )
@@ -112,6 +110,8 @@ def generate_link(user_id, project):
     return f"https://example.com/{project}?user={user_id}&id={unique}"
 
 
+# -------------------- МЕНЮ --------------------
+
 async def send_main_menu(user_id, username):
     text = (
         f"🌿 Приветствуем тебя, {username}!\n\n"
@@ -130,9 +130,129 @@ async def send_main_menu(user_id, username):
     )
 
 
-# ----------------------------------------
-# СТАРТ
-# ----------------------------------------
+# -------------------- СОЗДАНИЕ ССЫЛКИ --------------------
+
+@dp.callback_query(F.data == "create_link")
+async def create_link(callback: CallbackQuery):
+    await callback.answer()
+
+    await callback.message.edit_caption(
+        caption="🤖 Все проекты:",
+        reply_markup=projects_kb()
+    )
+
+
+@dp.callback_query(F.data.startswith("proj_"))
+async def select_project(callback: CallbackQuery, state: FSMContext):
+    await callback.answer()
+
+    project = callback.data.split("_")[1]
+    await state.update_data(project=project)
+
+    await callback.message.edit_caption(
+        caption=f"💰 Введи цену объявления для {project}:",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="create_link")]
+            ]
+        )
+    )
+
+    await state.set_state(Form.price)
+
+
+@dp.message(Form.price)
+async def get_price(message: Message, state: FSMContext):
+    if not message.text.isdigit():
+        await message.answer("❌ Введи число")
+        return
+
+    price = int(message.text)
+    data = await state.get_data()
+
+    project = data["project"]
+    user_id = message.from_user.id
+
+    link = generate_link(user_id, project)
+
+    # 💾 сохраняем
+    cursor.execute(
+        "INSERT INTO links (user_id, project, price, link) VALUES (?, ?, ?, ?)",
+        (user_id, project, price, link)
+    )
+    conn.commit()
+
+    await message.answer(
+        f"🔗 Ссылка создана!\n\n"
+        f"🏦 {project}\n"
+        f"💰 {price} UAH\n\n"
+        f"{link}"
+    )
+
+    await state.clear()
+
+
+# -------------------- МОИ ОБЪЯВЛЕНИЯ --------------------
+
+@dp.callback_query(F.data == "my_posts")
+async def my_posts(callback: CallbackQuery):
+    await callback.answer()
+
+    user_id = callback.from_user.id
+
+    cursor.execute("SELECT project, price FROM links WHERE user_id=?", (user_id,))
+    rows = cursor.fetchall()
+
+    if not rows:
+        text = "📭 У тебя нет объявлений"
+    else:
+        text = "🐰 Ваши ссылки:\n\n"
+        for i, (project, price) in enumerate(rows, 1):
+            text += f"• Украина / {project} / {price} UAH\n"
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🗑 Удалить все ссылки", callback_data="delete_links")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_menu")]
+        ]
+    )
+
+    await callback.message.edit_caption(
+        caption=text,
+        reply_markup=kb
+    )
+
+
+@dp.callback_query(F.data == "delete_links")
+async def delete_links(callback: CallbackQuery):
+    await callback.answer()
+
+    user_id = callback.from_user.id
+
+    cursor.execute("DELETE FROM links WHERE user_id=?", (user_id,))
+    conn.commit()
+
+    await callback.message.edit_caption(
+        caption="🗑 Все ссылки удалены",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_menu")]
+            ]
+        )
+    )
+
+
+@dp.callback_query(F.data == "back_menu")
+async def back_menu(callback: CallbackQuery):
+    await callback.answer()
+
+    await send_main_menu(
+        callback.from_user.id,
+        callback.from_user.full_name
+    )
+
+
+# -------------------- СТАРТ И ЗАЯВКИ --------------------
 
 @dp.message(CommandStart())
 async def start(message: Message, state: FSMContext):
@@ -142,19 +262,14 @@ async def start(message: Message, state: FSMContext):
         await send_main_menu(user_id, message.from_user.full_name)
         return
 
-    await message.answer(
-        f"🌿 Привет, {message.from_user.first_name}!\n\n"
-        f"🆔 Твой ID: {user_id}\n\n"
-        f"✨ Расскажи о себе:"
-    )
-
+    await message.answer("Расскажи о себе:")
     await state.set_state(Form.about)
 
 
 @dp.message(Form.about)
 async def about(message: Message, state: FSMContext):
     await state.update_data(about=message.text)
-    await message.answer("Откуда узнал о проекте?")
+    await message.answer("Откуда узнал?")
     await state.set_state(Form.source)
 
 
@@ -172,146 +287,35 @@ async def source(message: Message, state: FSMContext):
         ]
     )
 
-    text = (
-        f"📥 Новая заявка\n\n"
-        f"👤 @{user.username}\n"
-        f"🆔 {user.id}\n\n"
-        f"📌 {data['about']}\n\n"
-        f"🔗 {message.text}"
-    )
-
-    await bot.send_message(ADMIN_ID, text, reply_markup=kb)
-    await message.answer("⏳ Ожидайте решения")
+    await bot.send_message(ADMIN_ID, f"{data['about']}\n{message.text}", reply_markup=kb)
+    await message.answer("⏳ Ожидай")
 
     await state.clear()
 
 
-# ----------------------------------------
-# СОЗДАНИЕ ССЫЛКИ
-# ----------------------------------------
-
-@dp.callback_query(F.data == "create_link")
-async def create_link(callback: CallbackQuery):
-    await callback.answer()
-
-    await callback.message.edit_caption(
-        caption="🤖 Все проекты:",
-        reply_markup=projects_kb()
-    )
-
-
-@dp.callback_query(F.data.startswith("proj_"))
-async def select_project(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
-
-    project = callback.data.split("_")[1]
-
-    await state.update_data(project=project)
-
-    await callback.message.edit_caption(
-        caption=f"💰 Введи цену объявления для {project} (только число, UAH):",
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Назад", callback_data="create_link")]
-            ]
-        )
-    )
-
-    await state.set_state(Form.price)
-
-
-@dp.message(Form.price)
-async def get_price(message: Message, state: FSMContext):
-    if not message.text.isdigit():
-        await message.answer("❌ Введи ТОЛЬКО число")
-        return
-
-    price = int(message.text)
-
-    data = await state.get_data()
-    project = data["project"]
-    user_id = message.from_user.id
-
-    link = generate_link(user_id, project)
-
-    await message.answer(
-        f"🔗 Ссылка создана!\n\n"
-        f"🏦 Проект: {project}\n"
-        f"💰 Цена: {price} UAH\n\n"
-        f"{link}"
-    )
-
-    await state.clear()
-
-
-@dp.callback_query(F.data == "back_menu")
-async def back_menu(callback: CallbackQuery):
-    await callback.answer()
-
-    await send_main_menu(
-        callback.from_user.id,
-        callback.from_user.full_name
-    )
-
-
-# ----------------------------------------
-# ОДОБРЕНИЕ
-# ----------------------------------------
+# -------------------- АДМИН --------------------
 
 @dp.callback_query(F.data.startswith("approve_"))
 async def approve(callback: CallbackQuery):
     await callback.answer()
 
-    try:
-        user_id = int(callback.data.split("_")[1])
-        approve_user(user_id)
+    user_id = int(callback.data.split("_")[1])
+    approve_user(user_id)
 
-        await send_main_menu(
-            user_id,
-            (await bot.get_chat(user_id)).full_name
-        )
+    await send_main_menu(user_id, (await bot.get_chat(user_id)).full_name)
+    await callback.message.edit_text("Принят ✅")
 
-        await callback.message.edit_text("Заявка принята ✅")
-
-    except Exception as e:
-        print("ERROR:", e)
-
-
-# ----------------------------------------
-# ОТКЛОНЕНИЕ
-# ----------------------------------------
 
 @dp.callback_query(F.data.startswith("reject_"))
 async def reject(callback: CallbackQuery):
     await callback.answer()
 
     user_id = int(callback.data.split("_")[1])
-
-    await bot.send_message(user_id, "❌ Ваша заявка отклонена")
-    await callback.message.edit_text("Заявка отклонена ❌")
-
-
-# ----------------------------------------
-# КОМАНДЫ
-# ----------------------------------------
-
-@dp.message(F.text == "/menu")
-async def menu(message: Message):
-    if not is_approved(message.from_user.id):
-        await message.answer("⛔ Нет доступа")
-        return
-
-    await send_main_menu(message.from_user.id, message.from_user.full_name)
+    await bot.send_message(user_id, "❌ Отклонено")
+    await callback.message.edit_text("Отклонено ❌")
 
 
-@dp.message(F.text == "/myid")
-async def myid(message: Message):
-    await message.answer(f"🆔 {message.from_user.id}")
-
-
-# ----------------------------------------
-# RUN
-# ----------------------------------------
+# -------------------- RUN --------------------
 
 async def main():
     print("Bot started!")
