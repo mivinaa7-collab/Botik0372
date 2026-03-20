@@ -2,35 +2,92 @@ import asyncio
 import os
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram.types import (
+    Message, InlineKeyboardMarkup, InlineKeyboardButton,
+    CallbackQuery
+)
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-ADMIN_ID = 8468065089  # ← вставь свой ID
+# ----------------------------------------
+# НАСТРОЙКИ
+# ----------------------------------------
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")  # или вставь токен сюда руками
+ADMIN_ID = 8468065089  # ID админа, который принимает заявки
+
+# вот сюда вставь file_id картинки меню
+PHOTO_FILE_ID = "ВАШ_FILE_ID_СЮДА"
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
+approved_users = set()
+
+
+# ----------------------------------------
+# FSM — форма заявки
+# ----------------------------------------
 
 class Form(StatesGroup):
     about = State()
     source = State()
 
 
-approved_users = set()
+# ----------------------------------------
+# Главное меню
+# ----------------------------------------
 
+def main_menu_kb():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🏝 Создать ссылку", callback_data="create_link")],
+            [InlineKeyboardButton(text="🤍 Мои объявления", callback_data="my_posts")],
+            [InlineKeyboardButton(text="🐷 Вбив-состав", callback_data="vbiv_team")],
+            [InlineKeyboardButton(text="🫧 Касса", callback_data="kassa")],
+            [InlineKeyboardButton(text="🍬 Настройки", callback_data="settings")]
+        ]
+    )
+
+
+async def send_main_menu(user_id, username):
+    status = "Воркер"
+    users_count = 36
+    profit = 0
+
+    text = (
+        f"🌿 Приветствуем тебя, {username}!\n\n"
+        f"💎 Твой статус: {status}\n"
+        f"👨‍💻 Кол-во юзеров: {users_count}\n"
+        f"✨ Профитов: {profit}\n\n"
+        f"❄️ Статус проекта: ✅ work\n\n"
+        f"Куда дальше? 👇"
+    )
+
+    await bot.send_photo(
+        chat_id=user_id,
+        photo=PHOTO_FILE_ID,
+        caption=text,
+        reply_markup=main_menu_kb()
+    )
+
+
+# ----------------------------------------
+# Старт — подача заявки
+# ----------------------------------------
 
 @dp.message(CommandStart())
 async def start(message: Message, state: FSMContext):
     user_id = message.from_user.id
 
+    # Если уже одобрен — показываем меню
     if user_id in approved_users:
-        await message.answer("Ты уже одобрен ✅")
+        await send_main_menu(user_id, message.from_user.full_name)
         return
 
+    # Иначе — начинаем заявку
     await message.answer(
         f"🌿 Привет, {message.from_user.first_name}!\n\n"
         f"🆔 Твой ID: {user_id}\n\n"
@@ -44,10 +101,7 @@ async def start(message: Message, state: FSMContext):
 async def about(message: Message, state: FSMContext):
     await state.update_data(about=message.text)
 
-    await message.answer(
-        "✨ Хорошо, теперь введи тег или ссылку на канал, откуда узнал о проекте."
-    )
-
+    await message.answer("✨ Хорошо, теперь введи тег или ссылку на канал, откуда узнал о проекте.")
     await state.set_state(Form.source)
 
 
@@ -59,12 +113,14 @@ async def source(message: Message, state: FSMContext):
     source = message.text
     user = message.from_user
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="✅ Принять", callback_data=f"approve_{user.id}"),
-            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_{user.id}")
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Принять", callback_data=f"approve_{user.id}"),
+                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_{user.id}")
+            ]
         ]
-    ])
+    )
 
     text = (
         f"📥 Новая заявка\n\n"
@@ -75,47 +131,99 @@ async def source(message: Message, state: FSMContext):
     )
 
     await bot.send_message(ADMIN_ID, text, reply_markup=kb)
-
-    await message.answer("⏳ Спасибо! Ожидайте, пока администратор рассмотрит вашу заявку.")
+    await message.answer("⏳ Спасибо! Ожидайте решения администратора.")
 
     await state.clear()
 
 
+# ----------------------------------------
+# Админ: принять заявку
+# ----------------------------------------
+
 @dp.callback_query(F.data.startswith("approve_"))
 async def approve(callback: CallbackQuery):
     user_id = int(callback.data.split("_")[1])
-
     approved_users.add(user_id)
 
-    await bot.send_message(
+    await send_main_menu(
         user_id,
-        "👻 Поздравляем! Ваша заявка принята.\n\n"
-        "Подпишись на канал @your_channel\n\n"
-        "После этого нажми /start"
+        (await bot.get_chat(user_id)).full_name
     )
 
     await callback.message.edit_text("Заявка принята ✅")
 
+
+# ----------------------------------------
+# Админ: отклонить заявку
+# ----------------------------------------
 
 @dp.callback_query(F.data.startswith("reject_"))
 async def reject(callback: CallbackQuery):
     user_id = int(callback.data.split("_")[1])
 
     await bot.send_message(user_id, "❌ Ваша заявка отклонена")
-
     await callback.message.edit_text("Заявка отклонена ❌")
 
 
+# ----------------------------------------
+# /menu — открыть меню вручную
+# ----------------------------------------
+
+@dp.message(F.text == "/menu")
+async def open_menu(message: Message):
+    user_id = message.from_user.id
+
+    if user_id not in approved_users:
+        await message.answer("⛔ Сначала подай заявку через /start")
+        return
+
+    await send_main_menu(user_id, message.from_user.full_name)
+
+
+# ----------------------------------------
+# /myid — показать Telegram ID
+# ----------------------------------------
+
+@dp.message(F.text == "/myid")
+async def my_id(message: Message):
+    await message.answer(f"🆔 Ваш ID: <code>{message.from_user.id}</code>")
+
+
+# ----------------------------------------
+# /getfileid — получить file_id фото
+# ----------------------------------------
+
+@dp.message(F.text == "/getfileid")
+async def get_file_id(message: Message):
+    if not message.reply_to_message or not message.reply_to_message.photo:
+        await message.answer("📸 Ответь /getfileid на фото.")
+        return
+
+    photo = message.reply_to_message.photo[-1]
+    file_id = photo.file_id
+
+    await message.answer(f"🆔 file_id:\n<code>{file_id}</code>")
+
+
+# ----------------------------------------
+# fallback — любое сообщение
+# ----------------------------------------
+
 @dp.message()
-async def check(message: Message):
+async def fallback(message: Message):
     if message.from_user.id not in approved_users:
         await message.answer("⛔ Сначала подай заявку через /start")
         return
 
-    await message.answer("Ты внутри системы 😎")
+    await send_main_menu(message.from_user.id, message.from_user.full_name)
 
+
+# ----------------------------------------
+# RUN
+# ----------------------------------------
 
 async def main():
+    print("Bot started!")
     await dp.start_polling(bot)
 
 
