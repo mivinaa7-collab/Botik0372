@@ -314,6 +314,9 @@ async def start(message: Message, state: FSMContext):
 
 async def main():
     set_role(ADMIN_ID, "owner")
+    
+    await bot.delete_webhook(drop_pending_updates=True)
+    
     print("Bot started!")
     await dp.start_polling(bot)
 
