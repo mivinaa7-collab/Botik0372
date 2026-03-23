@@ -54,8 +54,68 @@ CREATE TABLE IF NOT EXISTS settings (
 )
 """)
 
+# 🔥 НОВОЕ
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS roles (
+    user_id INTEGER PRIMARY KEY,
+    role TEXT,
+    banned INTEGER DEFAULT 0
+)
+""")
+
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    action TEXT,
+    time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+""")
+
 conn.commit()
 
+
+# -------------------- РОЛИ --------------------
+
+def get_role(user_id):
+    cursor.execute("SELECT role, banned FROM roles WHERE user_id=?", (user_id,))
+    res = cursor.fetchone()
+    if not res:
+        return "worker", 0
+    return res
+
+
+def set_role(user_id, role):
+    cursor.execute(
+        "INSERT OR REPLACE INTO roles (user_id, role, banned) VALUES (?, ?, 0)",
+        (user_id, role)
+    )
+    conn.commit()
+
+
+def ban_user(user_id):
+    cursor.execute("UPDATE roles SET banned=1 WHERE user_id=?", (user_id,))
+    conn.commit()
+
+
+def unban_user(user_id):
+    cursor.execute("UPDATE roles SET banned=0 WHERE user_id=?", (user_id,))
+    conn.commit()
+
+
+def log_action(user_id, action):
+    cursor.execute("INSERT INTO logs (user_id, action) VALUES (?, ?)", (user_id, action))
+    conn.commit()
+
+
+def has_access(user_id, roles):
+    role, banned = get_role(user_id)
+    if banned:
+        return False
+    return role in roles
+
+
+# -------------------- ОСНОВНЫЕ ФУНКЦИИ --------------------
 
 def approve_user(user_id: int):
     cursor.execute("INSERT OR IGNORE INTO users (user_id, approved) VALUES (?, 0)", (user_id,))
@@ -95,6 +155,11 @@ class Form(StatesGroup):
     tag = State()
 
 
+class AdminFSM(StatesGroup):
+    broadcast = State()
+    ban = State()
+
+
 # -------------------- КНОПКИ --------------------
 
 def main_menu_kb():
@@ -107,28 +172,28 @@ def main_menu_kb():
     )
 
 
+def admin_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 Стата", callback_data="admin_stats")],
+        [InlineKeyboardButton(text="📩 Рассылка", callback_data="admin_broadcast")],
+        [InlineKeyboardButton(text="👥 Юзеры", callback_data="admin_users")],
+        [InlineKeyboardButton(text="🔨 Бан", callback_data="admin_ban")],
+        [InlineKeyboardButton(text="🧾 Логи", callback_data="admin_logs")],
+    ])
+
+
+def back_admin():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin_back")]
+    ])
+
+
 def projects_kb():
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(text="🇺🇦 Приват", callback_data="proj_privat"),
-                InlineKeyboardButton(text="🇺🇦 Ощад", callback_data="proj_oshad")
-            ],
-            [
-                InlineKeyboardButton(text="🇺🇦 Райффайзен", callback_data="proj_raif"),
-                InlineKeyboardButton(text="🇺🇦 Дия", callback_data="proj_diya")
-            ],
-            [
-                InlineKeyboardButton(text="🇺🇦 Вайбер", callback_data="proj_viber"),
-                InlineKeyboardButton(text="🇺🇦 Пумб", callback_data="proj_pumb")
-            ],
-            [
-                InlineKeyboardButton(text="🇺🇦 УКР СИБ", callback_data="proj_ukrsib"),
-                InlineKeyboardButton(text="🇺🇦 Дия 2", callback_data="proj_diya2")
-            ],
-            [
-                InlineKeyboardButton(text="⬅️ Назад", callback_data="back_menu")
-            ]
+            [InlineKeyboardButton(text="🇺🇦 Приват", callback_data="proj_privat"),
+             InlineKeyboardButton(text="🇺🇦 Ощад", callback_data="proj_oshad")],
+            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_menu")]
         ]
     )
 
@@ -141,8 +206,6 @@ def settings_kb(traffic):
                 text="✅ вкл переходы" if not traffic else "❌ выкл переходы",
                 callback_data="toggle_traffic"
             )],
-            [InlineKeyboardButton(text="💌 сообщения кодеру", callback_data="coder")],
-            [InlineKeyboardButton(text="🔗 add личный домен", callback_data="add_domain")],
             [InlineKeyboardButton(text="⬅️ назад", callback_data="back_menu")]
         ]
     )
@@ -156,280 +219,101 @@ def generate_link(user_id, project):
 # -------------------- МЕНЮ --------------------
 
 async def send_main_menu(user_id, username):
-    text = (
-        f"🌿 Приветствуем тебя, {username}!\n\n"
-        f"💎 Твой статус: Воркер\n"
-        f"👨‍💻 Кол-во юзеров: 36\n"
-        f"✨ Профитов: 0\n\n"
-        f"❄️ Статус проекта: ✅ work\n\n"
-        f"Куда дальше? 👇"
-    )
-
     await bot.send_photo(
         chat_id=user_id,
         photo=PHOTO_FILE_ID,
-        caption=text,
+        caption=f"Привет {username}",
         reply_markup=main_menu_kb()
     )
 
 
-# -------------------- СОЗДАНИЕ ССЫЛКИ --------------------
+# -------------------- АДМИНКА --------------------
 
-@dp.callback_query(F.data == "create_link")
-async def create_link(callback: CallbackQuery):
-    await callback.answer()
-    await callback.message.edit_caption(
-        caption="🤖 Все проекты:",
-        reply_markup=projects_kb()
-    )
-
-
-@dp.callback_query(F.data.startswith("proj_"))
-async def select_project(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
-
-    project = callback.data.split("_")[1]
-    await state.update_data(project=project)
-
-    await callback.message.edit_caption(
-        caption=f"💰 Введи цену объявления для {project}:",
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Назад", callback_data="create_link")]
-            ]
-        )
-    )
-
-    await state.set_state(Form.price)
-
-
-@dp.message(Form.price)
-async def get_price(message: Message, state: FSMContext):
-    if not message.text.isdigit():
-        await message.answer("❌ Введи число")
+@dp.message(F.text == "/admin")
+async def admin_panel(message: Message):
+    if not has_access(message.from_user.id, ["owner", "admin"]):
         return
+    await message.answer("⚙️ Админ панель", reply_markup=admin_kb())
 
-    price = int(message.text)
-    data = await state.get_data()
 
-    project = data["project"]
-    user_id = message.from_user.id
+@dp.callback_query(F.data == "admin_stats")
+async def admin_stats(call: CallbackQuery):
+    cursor.execute("SELECT COUNT(*) FROM users")
+    total = cursor.fetchone()[0]
 
-    link = generate_link(user_id, project)
+    cursor.execute("SELECT COUNT(*) FROM roles WHERE banned=1")
+    banned = cursor.fetchone()[0]
 
-    cursor.execute(
-        "INSERT INTO links (user_id, project, price, link) VALUES (?, ?, ?, ?)",
-        (user_id, project, price, link)
-    )
-    conn.commit()
+    await call.message.edit_text(f"Юзеров: {total}\nБан: {banned}", reply_markup=back_admin())
 
-    await message.answer(
-        f"🔗 Ссылка создана!\n\n"
-        f"🏦 {project}\n"
-        f"💰 {price} UAH\n\n"
-        f"{link}"
-    )
 
+@dp.callback_query(F.data == "admin_broadcast")
+async def broadcast_start(call: CallbackQuery, state: FSMContext):
+    await call.message.edit_text("Текст рассылки:")
+    await state.set_state(AdminFSM.broadcast)
+
+
+@dp.message(AdminFSM.broadcast)
+async def broadcast_send(message: Message, state: FSMContext):
+    cursor.execute("SELECT user_id FROM users")
+    users = cursor.fetchall()
+
+    for (u,) in users:
+        try:
+            await bot.send_message(u, message.text)
+        except:
+            pass
+
+    await message.answer("Готово")
     await state.clear()
 
 
-# -------------------- МОИ ОБЪЯВЛЕНИЯ --------------------
+@dp.callback_query(F.data == "admin_ban")
+async def ban_start(call: CallbackQuery, state: FSMContext):
+    await call.message.edit_text("ID:")
+    await state.set_state(AdminFSM.ban)
 
-@dp.callback_query(F.data == "my_posts")
-async def my_posts(callback: CallbackQuery):
-    await callback.answer()
 
-    user_id = callback.from_user.id
+@dp.message(AdminFSM.ban)
+async def ban_process(message: Message, state: FSMContext):
+    uid = int(message.text)
+    role, banned = get_role(uid)
 
-    cursor.execute("SELECT project, price FROM links WHERE user_id=?", (user_id,))
-    rows = cursor.fetchall()
-
-    if not rows:
-        text = "📭 У тебя нет объявлений"
+    if banned:
+        unban_user(uid)
+        await message.answer("Разбан")
     else:
-        text = "🐰 Ваши ссылки:\n\n"
-        for project, price in rows:
-            text += f"• Украина / {project} / {price} UAH\n"
+        ban_user(uid)
+        await message.answer("Бан")
 
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="🗑 Удалить все ссылки", callback_data="delete_links")],
-            [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_menu")]
-        ]
-    )
-
-    await callback.message.edit_caption(
-        caption=text,
-        reply_markup=kb
-    )
-
-
-@dp.callback_query(F.data == "delete_links")
-async def delete_links(callback: CallbackQuery):
-    await callback.answer()
-
-    user_id = callback.from_user.id
-    cursor.execute("DELETE FROM links WHERE user_id=?", (user_id,))
-    conn.commit()
-
-    await callback.message.edit_caption(
-        caption="🗑 Все ссылки удалены",
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_menu")]
-            ]
-        )
-    )
-
-
-# -------------------- НАСТРОЙКИ --------------------
-
-@dp.callback_query(F.data == "settings")
-async def settings(callback: CallbackQuery):
-    await callback.answer()
-
-    user_id = callback.from_user.id
-    s = get_settings(user_id)
-
-    traffic_status = "❌ выкл" if s["traffic"] == 0 else "✅ вкл"
-
-    text = (
-        "🍬 Настройки / Налаштування\n\n"
-        f"1️⃣ Твой тэг: {s['tag']}\n"
-        f"2️⃣ Домен: {s['domain']}\n"
-        f"3️⃣ Способ выплаты: {s['payment']}\n"
-        f"4️⃣ Переходы: {traffic_status}"
-    )
-
-    await callback.message.edit_caption(
-        caption=text,
-        reply_markup=settings_kb(s["traffic"])
-    )
-
-
-@dp.callback_query(F.data == "toggle_traffic")
-async def toggle_traffic(callback: CallbackQuery):
-    await callback.answer()
-
-    user_id = callback.from_user.id
-    s = get_settings(user_id)
-
-    new_value = 0 if s["traffic"] else 1
-
-    cursor.execute(
-        "UPDATE settings SET traffic=? WHERE user_id=?",
-        (new_value, user_id)
-    )
-    conn.commit()
-
-    await settings(callback)
-
-
-@dp.callback_query(F.data == "set_tag")
-async def set_tag(callback: CallbackQuery, state: FSMContext):
-    await callback.answer()
-
-    await callback.message.edit_caption(
-        caption="✍️ Введи новый тег:"
-    )
-
-    await state.set_state(Form.tag)
-
-
-@dp.message(Form.tag)
-async def save_tag(message: Message, state: FSMContext):
-    user_id = message.from_user.id
-
-    cursor.execute(
-        "UPDATE settings SET tag=? WHERE user_id=?",
-        (message.text, user_id)
-    )
-    conn.commit()
-
-    await message.answer("✅ Тег обновлен")
     await state.clear()
 
-    await send_main_menu(user_id, message.from_user.full_name)
 
+# -------------------- AUTO ROLE --------------------
 
-# -------------------- НАЗАД --------------------
-
-@dp.callback_query(F.data == "back_menu")
-async def back_menu(callback: CallbackQuery):
-    await callback.answer()
-
-    await send_main_menu(
-        callback.from_user.id,
-        callback.from_user.full_name
-    )
+@dp.message()
+async def auto_role(message: Message):
+    cursor.execute("INSERT OR IGNORE INTO roles (user_id, role, banned) VALUES (?, 'worker', 0)",
+                   (message.from_user.id,))
+    conn.commit()
 
 
 # -------------------- СТАРТ --------------------
 
 @dp.message(CommandStart())
 async def start(message: Message, state: FSMContext):
-    user_id = message.from_user.id
-
-    if is_approved(user_id):
-        await send_main_menu(user_id, message.from_user.full_name)
+    if is_approved(message.from_user.id):
+        await send_main_menu(message.from_user.id, message.from_user.full_name)
         return
 
     await message.answer("Расскажи о себе:")
     await state.set_state(Form.about)
 
 
-@dp.message(Form.about)
-async def about(message: Message, state: FSMContext):
-    await state.update_data(about=message.text)
-    await message.answer("Откуда узнал?")
-    await state.set_state(Form.source)
-
-
-@dp.message(Form.source)
-async def source(message: Message, state: FSMContext):
-    data = await state.get_data()
-    user = message.from_user
-
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="✅ Принять", callback_data=f"approve_{user.id}"),
-                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject_{user.id}")
-            ]
-        ]
-    )
-
-    await bot.send_message(ADMIN_ID, f"{data['about']}\n{message.text}", reply_markup=kb)
-    await message.answer("⏳ Ожидай")
-
-    await state.clear()
-
-
-# -------------------- АДМИН --------------------
-
-@dp.callback_query(F.data.startswith("approve_"))
-async def approve(callback: CallbackQuery):
-    await callback.answer()
-
-    user_id = int(callback.data.split("_")[1])
-    approve_user(user_id)
-
-    await send_main_menu(user_id, (await bot.get_chat(user_id)).full_name)
-    await callback.message.edit_text("Принят ✅")
-
-
-@dp.callback_query(F.data.startswith("reject_"))
-async def reject(callback: CallbackQuery):
-    await callback.answer()
-
-    user_id = int(callback.data.split("_")[1])
-    await bot.send_message(user_id, "❌ Отклонено")
-    await callback.message.edit_text("Отклонено ❌")
-
-
 # -------------------- RUN --------------------
 
 async def main():
+    set_role(ADMIN_ID, "owner")
     print("Bot started!")
     await dp.start_polling(bot)
 
