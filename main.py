@@ -54,7 +54,6 @@ CREATE TABLE IF NOT EXISTS settings (
 )
 """)
 
-# 🔥 НОВОЕ
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS roles (
     user_id INTEGER PRIMARY KEY,
@@ -115,7 +114,7 @@ def has_access(user_id, roles):
     return role in roles
 
 
-# -------------------- ОСНОВНЫЕ ФУНКЦИИ --------------------
+# -------------------- ОСНОВНЫЕ --------------------
 
 def approve_user(user_id: int):
     cursor.execute("INSERT OR IGNORE INTO users (user_id, approved) VALUES (?, 0)", (user_id,))
@@ -219,12 +218,15 @@ def generate_link(user_id, project):
 # -------------------- МЕНЮ --------------------
 
 async def send_main_menu(user_id, username):
-    await bot.send_photo(
-        chat_id=user_id,
-        photo=PHOTO_FILE_ID,
-        caption=f"Привет {username}",
-        reply_markup=main_menu_kb()
-    )
+    try:
+        await bot.send_photo(
+            chat_id=user_id,
+            photo=PHOTO_FILE_ID,
+            caption=f"Привет {username}",
+            reply_markup=main_menu_kb()
+        )
+    except:
+        await bot.send_message(user_id, f"Привет {username}", reply_markup=main_menu_kb())
 
 
 # -------------------- АДМИНКА --------------------
@@ -289,19 +291,14 @@ async def ban_process(message: Message, state: FSMContext):
     await state.clear()
 
 
-# -------------------- AUTO ROLE --------------------
-
-@dp.message()
-async def auto_role(message: Message):
-    cursor.execute("INSERT OR IGNORE INTO roles (user_id, role, banned) VALUES (?, 'worker', 0)",
-                   (message.from_user.id,))
-    conn.commit()
-
-
 # -------------------- СТАРТ --------------------
 
 @dp.message(CommandStart())
 async def start(message: Message, state: FSMContext):
+    # ✅ фикс регистрации юзера
+    cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (message.from_user.id,))
+    conn.commit()
+
     if is_approved(message.from_user.id):
         await send_main_menu(message.from_user.id, message.from_user.full_name)
         return
@@ -310,13 +307,26 @@ async def start(message: Message, state: FSMContext):
     await state.set_state(Form.about)
 
 
+# -------------------- AUTO ROLE --------------------
+
+# ✅ фикс чтобы не ломал команды
+@dp.message(~F.text.startswith("/"))
+async def auto_role(message: Message):
+    cursor.execute(
+        "INSERT OR IGNORE INTO roles (user_id, role, banned) VALUES (?, 'worker', 0)",
+        (message.from_user.id,)
+    )
+    conn.commit()
+
+
 # -------------------- RUN --------------------
 
 async def main():
     set_role(ADMIN_ID, "owner")
-    
+
+    # ✅ фикс конфликта Telegram
     await bot.delete_webhook(drop_pending_updates=True)
-    
+
     print("Bot started!")
     await dp.start_polling(bot)
 
